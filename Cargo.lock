@@ -4419,6 +4419,8 @@ dependencies = [
 name = "library"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
  "alloy-genesis",
  "alloy-primitives",
  "clap",
@@ -4432,12 +4434,14 @@ dependencies = [
  "reth-cli-commands",
  "reth-consensus",
  "reth-db",
+ "reth-ethereum-engine-primitives",
  "reth-ethereum-forks",
  "reth-ethereum-primitives",
  "reth-execution-types",
  "reth-node-builder",
  "reth-node-core",
  "reth-node-ethereum",
+ "reth-payload-primitives",
  "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
@@ -4448,6 +4452,7 @@ dependencies = [
  "reth-tracing",
  "reth-trie-db",
  "serde",
+ "tokio",
  "tracing",
 ]
 

@@ -102,9 +102,9 @@ where
 
 // Temporary custom chain implementation - should be replaced with proper chain spec
 fn custom_malachite_chain() -> ChainSpec {
-    use reth_chainspec::{Chain, ChainSpecBuilder};
     use alloy_genesis::{Genesis, GenesisAccount};
-    use alloy_primitives::{Address, U256, Bytes, B256};
+    use alloy_primitives::{Address, B256, Bytes, U256};
+    use reth_chainspec::{Chain, ChainSpecBuilder};
     use std::collections::BTreeMap;
 
     // Create a basic genesis block
@@ -121,11 +121,13 @@ fn custom_malachite_chain() -> ChainSpec {
         alloc: {
             let mut alloc = BTreeMap::new();
             alloc.insert(
-                "0x6Be02d1d3665660d22FF9624b7BE0551ee1Ac91b".parse().unwrap(),
+                "0x6Be02d1d3665660d22FF9624b7BE0551ee1Ac91b"
+                    .parse()
+                    .unwrap(),
                 GenesisAccount {
                     balance: U256::from_str_radix("4a47e3c12448f4ad000000", 16).unwrap(),
                     ..Default::default()
-                }
+                },
             );
             alloc
         },
@@ -138,4 +140,3 @@ fn custom_malachite_chain() -> ChainSpec {
         .paris_activated()
         .build()
 }
-

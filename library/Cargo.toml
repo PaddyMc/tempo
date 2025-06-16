@@ -11,6 +11,7 @@ rand.workspace = true
 clap.workspace = true
 tracing.workspace = true
 hex.workspace = true
+tokio.workspace = true
 
 
 # Malachite dependencies
@@ -38,8 +39,10 @@ reth-tracing.workspace = true
 reth-db.workspace = true
 reth-ethereum-forks.workspace = true
 reth.workspace = true
+reth-payload-primitives.workspace = true
+reth-ethereum-engine-primitives.workspace = true
+
+alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
-
-# [patch.crates-io]
-# hickory-resolver = "0.25.0-alpha.4"
+alloy-consensus.workspace = true

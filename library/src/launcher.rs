@@ -1,7 +1,6 @@
 use reth_node_builder::{
-    FullNodeTypes, NodeBuilderWithComponents, NodeHandle, LaunchNode,
-    NodeComponentsBuilder, NodeAddOns, NodeAdapter, LaunchContext,
-    rpc::RethRpcAddOns, NodeTypesWithDB,
+    FullNodeTypes, LaunchContext, LaunchNode, NodeAdapter, NodeAddOns, NodeBuilderWithComponents,
+    NodeComponentsBuilder, NodeHandle, NodeTypesWithDB, rpc::RethRpcAddOns,
 };
 use reth_node_core::dirs::{ChainPath, DataDirPath};
 use reth_provider::providers::BlockchainProvider;

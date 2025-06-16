@@ -21,6 +21,8 @@ reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch
 reth-consensus= { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-consensus" }
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-ethereum" }
 reth-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-primitives" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-ethereum-engine-primitives" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-payload-primitives" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-execution-types" }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-primitives-traits" }
 reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-node-core" }
@@ -42,6 +44,8 @@ reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "main", 
 alloy = { version = "1.0.9", default-features = false }
 alloy-genesis = "1.0.9"
 alloy-primitives = "1.0.9"
+alloy-eips = "1.0.9"
+alloy-consensus = "1.0.9"
 
 # Malachite dependencies
 malachite-core-types = { git = "https://github.com/informalsystems/malachite", branch = "main", package = "informalsystems-malachitebft-core-types" }

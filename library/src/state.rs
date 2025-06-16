@@ -1,9 +1,14 @@
 use malachite_core_types::Round;
-use rand::rngs::StdRng;
+
+use reth_ethereum_engine_primitives::EthPayloadTypes;
+
 use rand::SeedableRng;
+use rand::rngs::StdRng;
+use reth::payload::{PayloadBuilderHandle, PayloadServiceCommand};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use tokio::sync::mpsc;
 
 use crate::context::MalachiteContext;
 use crate::height::Height;
@@ -12,6 +17,7 @@ use crate::utils::seed_from_address;
 
 /// Represents the internal state of the application node
 /// Contains information about current height, round, proposals and blocks
+#[derive(Debug, Clone)]
 pub struct State {
     pub ctx: MalachiteContext,
     pub config: Config,
@@ -24,13 +30,18 @@ pub struct State {
     pub peers: HashSet<PeerId>,
     pub store: Store,
 
-    signing_provider: Ed25519Provider,
-    streams_map: PartStreamsMap,
-    rng: StdRng,
+    pub signing_provider: Ed25519Provider,
+    pub streams_map: PartStreamsMap,
+    pub rng: StdRng,
+
+    // Handle to the payload builder service
+    pub engine_handle: PayloadBuilderHandle<EthPayloadTypes>,
 }
 
 impl State {
     pub fn new(ctx: MalachiteContext, config: Config, genesis: Genesis, address: Address) -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+
         Self {
             ctx,
             config,
@@ -38,13 +49,14 @@ impl State {
             address,
             current_height: Height::default(),
             current_round: Round::Nil,
-            current_proposer: None, 
+            current_proposer: None,
             current_role: Role::None,
             peers: HashSet::new(),
             store: Store::new(),
             signing_provider: Ed25519Provider::new(),
             streams_map: PartStreamsMap::new(),
             rng: StdRng::seed_from_u64(seed_from_address(&address, std::process::id() as u64)),
+            engine_handle: PayloadBuilderHandle::new(tx),
         }
     }
 
@@ -210,6 +222,7 @@ impl fmt::Debug for PeerId {
 }
 
 // Use reth store implementation
+#[derive(Debug, Clone)]
 pub struct Store {
     // This would typically interface with reth's storage layer
     // For now, we'll use a simple in-memory store
@@ -246,6 +259,7 @@ impl Default for Store {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PartStreamsMap {
     // Maps from peer ID to their partial stream state
     streams: HashMap<PeerId, PartialStreamState>,

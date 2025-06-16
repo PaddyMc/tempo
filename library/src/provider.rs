@@ -1,16 +1,17 @@
 use crate::context::MalachiteContext;
-use malachite_core_types::{PrivateKey, PublicKey, Signature, SigningProvider};
+use malachite_core_types::{PrivateKey, PublicKey, Signature, SigningProvider, SigningScheme};
+use std::fmt;
 
 // TODO: Implement Ed25519Provider
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ed25519Provider {
     private_key: [u8; 32],
 }
 
 impl Ed25519Provider {
     pub fn new() -> Self {
-        Self { 
-            private_key: [0u8; 32] // Default/placeholder key
+        Self {
+            private_key: [0u8; 32], // Default/placeholder key
         }
     }
 
@@ -26,6 +27,21 @@ impl Ed25519Provider {
 impl Default for Ed25519Provider {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl SigningScheme for Ed25519Provider {
+    type PrivateKey = [u8; 32];
+    type PublicKey = Vec<u8>;
+    type Signature = Vec<u8>;
+    type DecodingError = std::io::Error;
+
+    fn decode_signature(bytes: &[u8]) -> Result<Self::Signature, Self::DecodingError> {
+        Ok(bytes.to_vec())
+    }
+
+    fn encode_signature(signature: &Self::Signature) -> Vec<u8> {
+        signature.clone()
     }
 }
 
