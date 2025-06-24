@@ -1,4 +1,3 @@
-use crate::app::state::State;
 use crate::consensus_utils::MalachiteConsensusBuilder;
 use reth::payload::{PayloadBuilderHandle, PayloadServiceCommand};
 use reth::transaction_pool::TransactionPool;
@@ -14,16 +13,13 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 
 /// Type configuration for a regular Reth node.
-#[derive(Debug, Clone)]
-pub struct RethNode {
-    // Consensus state
-    pub state: State,
-}
+#[derive(Debug, Clone, Default)]
+pub struct RethNode {}
 
 impl RethNode {
     /// Create a new RethNode
-    pub fn new(state: State) -> Self {
-        Self { state }
+    pub fn new() -> Self {
+        Self {}
     }
 }
 
