@@ -14,4 +14,5 @@ mod wrapper;
 
 pub use reth_store::{RethStore, StoreError};
 pub use tables::{DecidedValue, StoredProposal};
-pub use wrapper::Store;
+// Store is intentionally not exported publicly - access is controlled through State
+pub(crate) use wrapper::Store;
