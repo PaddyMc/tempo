@@ -34,10 +34,10 @@ In this architecture:
 pub struct State {
     // Engine API communication
     pub engine_handle: BeaconConsensusEngineHandle<<EthereumNode as NodeTypes>::Payload>,
-    
+
     // Payload building
     pub payload_store: Arc<PayloadStore<<EthereumNode as NodeTypes>::Payload>>,
-    
+
     // Other components
     pub store: Arc<Store>,
     pub sync: Arc<Sync>,
@@ -46,8 +46,6 @@ pub struct State {
 ```
 
 ## Communication Flows
-
-For a detailed analysis of the complete payload builder flow, see [payload-builder-flow.md](./payload-builder-flow.md).
 
 ### 1. Block Production Flow
 
@@ -59,7 +57,7 @@ sequenceDiagram
     participant S as State
     participant E as Reth Engine
     participant P as Payload Builder
-    
+
     M->>S: GetValue(height, round)
     S->>E: fork_choice_updated(state, attributes)
     E->>P: Trigger payload building
@@ -110,7 +108,7 @@ sequenceDiagram
     participant M as Malachite Consensus
     participant S as State
     participant E as Reth Engine
-    
+
     M->>S: Decided(certificate, block)
     S->>E: new_payload(execution_payload)
     E-->>S: PayloadStatus(VALID)
@@ -152,7 +150,7 @@ sequenceDiagram
     participant P as Peer
     participant S as State
     participant E as Reth Engine
-    
+
     P->>S: ProcessSyncedValue(certificate, block)
     S->>E: new_payload(execution_payload)
     E-->>S: PayloadStatus
@@ -179,7 +177,7 @@ pub async fn validate_synced_block(
     // Store for later finalization
     let value = Value::new(block);
     self.store.store_decided_value(certificate, value).await?;
-    
+
     Ok(())
 }
 ```
