@@ -1,90 +1,129 @@
 //! Configuration loader for Malachite consensus engine.
 //!
 //! This module provides utilities for loading and parsing consensus configuration
-//! from TOML files. It handles the extraction of P2P settings, metrics configuration,
-//! and node-specific parameters required to run the Malachite consensus engine.
-//!
-//! # Configuration Format
-//!
-//! The configuration file should contain:
-//! - `consensus.p2p.listen_addr`: The address to listen for P2P connections
-//! - `consensus.p2p.persistent_peers`: Comma-separated list of peer addresses
-//! - `metrics.listen_addr`: Optional metrics server address
+//! from TOML files. It properly deserializes the entire configuration structure,
+//! respecting all user settings including discovery, protocol, and timeout configurations.
 
-use crate::consensus::config::{EngineConfig, NodeConfig};
+use crate::consensus::config::{Config, EngineConfig};
 use eyre::Result;
 use std::{fs, path::Path};
-use toml;
 
 /// Load engine configuration from a TOML file
+///
+/// This function properly deserializes the entire TOML configuration file,
+/// preserving all user settings including discovery configuration, protocol
+/// settings, timeouts, and other consensus parameters.
 pub fn load_engine_config(
     config_path: &Path,
     chain_id: String,
-    node_id: String,
+    _node_id: String,
 ) -> Result<EngineConfig> {
-    // Read the TOML file
+    // Read and parse the TOML file
     tracing::info!("Reading config file from: {:?}", config_path);
     let config_str = fs::read_to_string(config_path)?;
     tracing::info!("Config file size: {} bytes", config_str.len());
-    let config_value: toml::Value = toml::from_str(&config_str)?;
 
-    // Extract consensus settings
-    let consensus = config_value
-        .get("consensus")
-        .ok_or_else(|| eyre::eyre!("Missing 'consensus' section in config"))?;
+    // Deserialize the entire config structure
+    let config: Config = toml::from_str(&config_str)?;
 
-    // Extract P2P settings
-    let p2p = consensus
-        .get("p2p")
-        .ok_or_else(|| eyre::eyre!("Missing 'consensus.p2p' section in config"))?;
-
-    // Parse listen address
-    let listen_addr = p2p
-        .get("listen_addr")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| eyre::eyre!("Missing 'consensus.p2p.listen_addr'"))?;
-
-    // Parse persistent peers
-    let peers_str = p2p
-        .get("persistent_peers")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let peers: Vec<String> = if peers_str.is_empty() {
-        Vec::new()
-    } else {
-        peers_str.split(',').map(|s| s.trim().to_string()).collect()
-    };
-
-    // Extract metrics settings
-    let metrics_port = config_value
-        .get("metrics")
-        .and_then(|m| m.get("listen_addr"))
-        .and_then(|v| v.as_str())
-        .and_then(|addr| addr.split(':').next_back())
-        .and_then(|port| port.parse::<u16>().ok())
-        .unwrap_or(9000);
-
-    // Extract the consensus port from listen_addr
-    let consensus_port = listen_addr
+    // Extract the consensus port from listen_addr for backwards compatibility
+    let consensus_port = config
+        .consensus
+        .p2p
+        .listen_addr
+        .to_string()
         .split('/')
-        .next_back()
+        .last()
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(26656);
 
-    // Create socket address
-    let socket_addr = format!("127.0.0.1:{consensus_port}").parse()?;
+    let socket_addr = format!("127.0.0.1:{}", consensus_port).parse()?;
 
-    // Create node config with the loaded settings
-    let mut node_config = NodeConfig::new(node_id.clone(), listen_addr.to_string(), peers.clone());
+    // Build the engine config using the loaded configuration
+    let mut engine_config = EngineConfig::new(chain_id, config.moniker.clone(), socket_addr);
 
-    // Update metrics port
-    node_config.metrics.listen_addr = format!("0.0.0.0:{metrics_port}").parse()?;
+    // Use the fully loaded config as the node config
+    // This preserves all user settings from the TOML file
+    engine_config.node = crate::consensus::config::NodeConfig {
+        moniker: config.moniker,
+        consensus: config.consensus,
+        value_sync: config.value_sync,
+        metrics: config.metrics,
+        runtime: config.runtime,
+        logging: config.logging,
+    };
 
-    // Create engine config
-    let mut engine_config = EngineConfig::new(chain_id, node_id, socket_addr);
-    engine_config.node = node_config;
+    // Also update the network config with persistent peers
+    let peers: Vec<String> = engine_config
+        .node
+        .consensus
+        .p2p
+        .persistent_peers
+        .iter()
+        .map(|addr| addr.to_string())
+        .collect();
     engine_config.network = engine_config.network.with_peers(peers);
 
     Ok(engine_config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_load_full_config() {
+        let config_content = r#"
+moniker = "test-node"
+
+[consensus]
+timeout_propose = "3s"
+timeout_prevote = "1s"
+timeout_precommit = "1s"
+timeout_commit = "1s"
+skip_timeout_commit = true
+
+[consensus.p2p]
+listen_addr = "/ip4/0.0.0.0/tcp/26656"
+persistent_peers = ["/ip4/127.0.0.1/tcp/26657", "/ip4/127.0.0.1/tcp/26658"]
+allow_duplicate_ip = true
+transport = "tcp"
+
+[consensus.p2p.discovery]
+enabled = true
+bootstrap_protocol = "none"
+selector = "random"
+num_outbound_peers = 2
+num_inbound_peers = 2
+
+[consensus.p2p.protocol]
+type = "gossipsub"
+mesh_n = 6
+mesh_n_high = 12
+mesh_n_low = 4
+mesh_outbound_min = 2
+
+[metrics]
+enabled = true
+listen_addr = "0.0.0.0:9000"
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+
+        let engine_config = load_engine_config(
+            temp_file.path(),
+            "test-chain".to_string(),
+            "node-0".to_string(),
+        )
+        .unwrap();
+
+        // Verify the config was properly loaded
+        assert_eq!(engine_config.node.moniker, "test-node");
+        assert_eq!(engine_config.node.consensus.p2p.discovery.enabled, true);
+        assert_eq!(engine_config.node.consensus.p2p.persistent_peers.len(), 2);
+        assert_eq!(engine_config.node.metrics.enabled, true);
+    }
 }

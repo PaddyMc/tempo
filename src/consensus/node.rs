@@ -2,7 +2,7 @@
 
 use crate::{
     app::{Genesis, State},
-    consensus::config::{EngineConfig, NodeConfig},
+    consensus::config::{Config, EngineConfig, NodeConfig},
     context::{BasePeerAddress, MalachiteContext},
     provider::{Ed25519Provider, PrivateKey, PublicKey},
     types::Address,
@@ -78,7 +78,7 @@ impl NodeHandle<MalachiteContext> for ConsensusHandle {
 #[async_trait]
 impl Node for MalachiteNode {
     type Context = MalachiteContext;
-    type Config = NodeConfig;
+    type Config = Config;
     type Genesis = Genesis;
     type PrivateKeyFile = PrivateKey;
     type SigningProvider = Ed25519Provider;
@@ -89,7 +89,15 @@ impl Node for MalachiteNode {
     }
 
     fn load_config(&self) -> eyre::Result<Self::Config> {
-        Ok(self.config.node.clone())
+        // Convert NodeConfig to Config for compatibility
+        Ok(Config {
+            moniker: self.config.node.moniker.clone(),
+            logging: self.config.node.logging.clone(),
+            consensus: self.config.node.consensus.clone(),
+            value_sync: self.config.node.value_sync.clone(),
+            metrics: self.config.node.metrics.clone(),
+            runtime: self.config.node.runtime.clone(),
+        })
     }
 
     fn get_address(&self, pk: &PublicKey) -> BasePeerAddress {
@@ -155,13 +163,14 @@ impl Node for MalachiteNode {
         let initial_validator_set = self.app_state.get_validator_set(crate::height::Height(1));
 
         // Start the Malachite consensus engine
+        let start_height = self.config.start_height.map(crate::height::Height);
         let (mut channels, engine_handle) = malachitebft_app_channel::start_engine(
             ctx.clone(),
             self.clone(),
             config,                   // Convert to Malachite's config type
             crate::codec::ProtoCodec, // WAL codec
             crate::codec::ProtoCodec, // Network codec
-            self.config.start_height,
+            start_height,
             initial_validator_set,
         )
         .await?;
@@ -227,10 +236,19 @@ impl CanMakeConfig for MalachiteNode {
     fn make_config(index: usize, _total: usize, _settings: MakeConfigSettings) -> Self::Config {
         // For now, return a default config
         // In production, this would generate appropriate config for node index out of total
-        NodeConfig::new(
+        let node_config = NodeConfig::new(
             format!("node-{index}"),
             format!("127.0.0.1:{}", 26000 + index),
             Vec::new(),
-        )
+        );
+
+        Config {
+            moniker: node_config.moniker.clone(),
+            logging: node_config.logging,
+            consensus: node_config.consensus,
+            value_sync: node_config.value_sync,
+            metrics: node_config.metrics,
+            runtime: node_config.runtime,
+        }
     }
 }

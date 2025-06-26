@@ -1,6 +1,9 @@
 # Node configuration template for reth-malachite
 # This file uses environment variable substitution
 
+# Node identifier
+moniker = "node-${NODE_ID}"
+
 # Consensus configuration
 [consensus]
 # How long to wait before proposing a new block
@@ -34,7 +37,13 @@ transport = "tcp"
 
 [consensus.p2p.discovery]
 # Enable peer discovery
-enabled = false
+enabled = true
+bootstrap_protocol = "full"
+selector = "random"
+num_outbound_peers = 2
+num_inbound_peers = 2
+max_connections_per_peer = 1
+ephemeral_connection_timeout = "5s"
 
 [consensus.p2p.protocol]
 type = "gossipsub"
