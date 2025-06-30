@@ -18,8 +18,8 @@ use crate::{
     types::{Address, ProposalPart, Value, ValueId},
 };
 use malachitebft_core_types::{
-    Address as MalachiteAddress, Context, Extension as MalachiteExtension, NilOrVal,
-    Proposal as MalachiteProposal, Round, SignedMessage, Validator as MalachiteValidator,
+    Address as MalachiteAddress, Context, Extension as MalachiteExtension, Height as HeightTrait,
+    NilOrVal, Proposal as MalachiteProposal, Round, SignedMessage, Validator as MalachiteValidator,
     ValidatorSet as MalachiteValidatorSet, Vote as MalachiteVote, VoteType,
 };
 use serde::{Deserialize, Serialize};
@@ -259,13 +259,18 @@ impl Context for MalachiteContext {
     fn select_proposer<'a>(
         &self,
         validators: &'a Self::ValidatorSet,
-        _height: Self::Height,
-        _round: Round,
+        height: Self::Height,
+        round: Round,
     ) -> &'a Self::Validator {
-        // For demonstration, always select the first validator
+        // Implement round-robin proposer selection
+        // proposer_index = (height - 1 + round) % validator_count
+        let height_offset = height.as_u64().saturating_sub(1) as usize;
+        let round_offset = round.as_i64().max(0) as usize;
+        let proposer_index = (height_offset + round_offset) % validators.count();
+
         validators
-            .get_by_index(0)
-            .expect("ValidatorSet is not empty")
+            .get_by_index(proposer_index)
+            .expect("proposer_index is valid")
     }
 
     fn new_proposal(

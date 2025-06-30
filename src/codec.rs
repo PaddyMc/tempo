@@ -108,7 +108,7 @@ impl Codec<ProposalPart> for ProtoCodec {
                 )))
             }
             Some(proto::proposal_part::Part::Data(data)) => Ok(ProposalPart::Data(
-                crate::types::ProposalData::new(Bytes::from(data.factor.to_be_bytes().to_vec())),
+                crate::types::ProposalData::new(data.bytes.clone()),
             )),
             Some(proto::proposal_part::Part::Fin(fin)) => {
                 let signature = fin
@@ -138,11 +138,7 @@ impl Codec<ProposalPart> for ProtoCodec {
             },
             ProposalPart::Data(data) => proto::ProposalPart {
                 part: Some(proto::proposal_part::Part::Data(proto::ProposalData {
-                    factor: u64::from_be_bytes(
-                        data.bytes.as_ref()[..8]
-                            .try_into()
-                            .map_err(|_| ProtoError::Other("Invalid data bytes".to_string()))?,
-                    ),
+                    bytes: data.bytes.clone(),
                 })),
             },
             ProposalPart::Fin(fin) => proto::ProposalPart {

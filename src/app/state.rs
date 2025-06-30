@@ -32,8 +32,9 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use bytes::Bytes;
 use eyre::Result;
+use hex;
 use malachitebft_app_channel::app::{
-    streaming::StreamMessage,
+    streaming::{Sequence, StreamContent, StreamMessage},
     types::{LocallyProposedValue, PeerId as MalachitePeerId, ProposedValue},
 };
 use malachitebft_core_types::{
@@ -51,7 +52,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 use tokio::sync::Mutex as TokioMutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Thread-safe wrapper for StdRng
 #[derive(Debug)]
@@ -438,11 +439,75 @@ impl State {
     pub async fn received_proposal_part(
         &self,
         from: MalachitePeerId,
-        _part: StreamMessage<ProposalPart>,
+        part: StreamMessage<ProposalPart>,
     ) -> Result<Option<ProposedValue<MalachiteContext>>> {
-        // For now, just return None - this would normally reassemble streaming proposals
-        info!("Received proposal part from {}", from);
-        Ok(None)
+        info!(
+            "Received proposal part from {} - sequence: {}, is_fin: {}, part_type: {}",
+            from,
+            part.sequence,
+            part.is_fin(),
+            match &part.content {
+                StreamContent::Data(p) => match p {
+                    ProposalPart::Init(_) => "Init",
+                    ProposalPart::Data(_) => "Data",
+                    ProposalPart::Fin(_) => "Fin",
+                },
+                StreamContent::Fin => "StreamFin",
+            }
+        );
+
+        // Check if we have a full proposal
+        let parts = {
+            let mut streams_map = self
+                .streams_map
+                .write()
+                .map_err(|_| eyre::eyre!("RwLock poisoned"))?;
+            streams_map.insert(from, part)
+        };
+
+        let Some(parts) = parts else {
+            debug!("Proposal not complete yet, waiting for more parts");
+            return Ok(None);
+        };
+
+        // Check if the proposal is outdated
+        let current_height = *self
+            .current_height
+            .read()
+            .map_err(|_| eyre::eyre!("RwLock poisoned"))?;
+        let current_round = *self
+            .current_round
+            .read()
+            .map_err(|_| eyre::eyre!("RwLock poisoned"))?;
+
+        if parts.height < current_height {
+            debug!(
+                height = %current_height,
+                round = %current_round,
+                part.height = %parts.height,
+                part.round = %parts.round,
+                "Received outdated proposal part, ignoring"
+            );
+            return Ok(None);
+        }
+
+        // Re-assemble the proposal from its parts
+        let (value, data) = assemble_value_from_parts(parts);
+
+        // Log first 32 bytes of proposal data and total size
+        if data.len() >= 32 {
+            info!(
+                "Proposal data[0..32]: {}, total_size: {} bytes, id: {:x}",
+                hex::encode(&data[..32]),
+                data.len(),
+                value.value.id().as_u64()
+            );
+        }
+
+        // Store the proposal
+        self.store.store_undecided_proposal(value.clone()).await?;
+
+        Ok(Some(value))
     }
 
     /// Creates stream messages for a proposal
@@ -451,9 +516,75 @@ impl State {
         value: LocallyProposedValue<MalachiteContext>,
         _pol_round: Round,
     ) -> impl Iterator<Item = StreamMessage<ProposalPart>> {
-        // For now, return empty iterator - this would normally split proposal into parts
         info!("Streaming proposal for height {}", value.height);
-        std::iter::empty()
+
+        // Create a unique stream ID for this proposal
+        let stream_id_bytes =
+            format!("{}-{}-{}", value.height, value.round, value.value.id()).into_bytes();
+        let stream_id =
+            malachitebft_app_channel::app::streaming::StreamId::new(Bytes::from(stream_id_bytes));
+
+        // Encode the value to bytes
+        let value_bytes = encode_value(&value.value);
+        info!(
+            "Encoding value of {} bytes for streaming",
+            value_bytes.len()
+        );
+
+        // Create hasher for signing
+        use sha3::{Digest, Keccak256};
+        let mut hasher = Keccak256::new();
+
+        // Add height to hash
+        hasher.update(value.height.as_u64().to_be_bytes().as_slice());
+        // Add round to hash
+        hasher.update(value.round.as_i64().to_be_bytes().as_slice());
+
+        // Create parts vector
+        let mut parts = Vec::new();
+        let mut sequence = 0u64;
+
+        // Part 1: Init
+        let init_part = ProposalPart::Init(crate::types::ProposalInit::new(
+            value.height,
+            value.round,
+            self.address,
+        ));
+        parts.push(StreamMessage::new(
+            stream_id.clone(),
+            sequence,
+            StreamContent::Data(init_part),
+        ));
+        sequence += 1;
+
+        // Part 2: Data chunks (split large values into smaller chunks)
+        const CHUNK_SIZE: usize = 32 * 1024; // 32KB chunks
+        for chunk in value_bytes.chunks(CHUNK_SIZE) {
+            // Add chunk to hash
+            hasher.update(chunk);
+
+            let data_part =
+                ProposalPart::Data(crate::types::ProposalData::new(Bytes::from(chunk.to_vec())));
+            parts.push(StreamMessage::new(
+                stream_id.clone(),
+                sequence,
+                StreamContent::Data(data_part),
+            ));
+            sequence += 1;
+        }
+
+        // Part 3: Fin with signature
+        let hash = hasher.finalize();
+        let signature = self.signing_provider.sign(hash.as_slice());
+        let fin_part = ProposalPart::Fin(crate::types::ProposalFin::new(signature));
+        parts.push(StreamMessage::new(
+            stream_id.clone(),
+            sequence,
+            StreamContent::Data(fin_part),
+        ));
+
+        info!("Created {} stream messages for proposal", parts.len());
+        parts.into_iter()
     }
 
     /// Commits a decided value
@@ -588,36 +719,6 @@ impl State {
         }
 
         Ok(None)
-    }
-
-    // Stream map operations
-    pub fn get_stream(&self, peer_id: &MalachitePeerId) -> Result<Option<PartialStreamState>> {
-        Ok(self
-            .streams_map
-            .read()
-            .map_err(|_| eyre::eyre!("RwLock poisoned"))?
-            .get_stream(peer_id)
-            .cloned())
-    }
-
-    pub fn insert_stream(
-        &self,
-        peer_id: MalachitePeerId,
-        stream: PartialStreamState,
-    ) -> Result<()> {
-        self.streams_map
-            .write()
-            .map_err(|_| eyre::eyre!("RwLock poisoned"))?
-            .insert_stream(peer_id, stream);
-        Ok(())
-    }
-
-    pub fn remove_stream(&self, peer_id: &MalachitePeerId) -> Result<Option<PartialStreamState>> {
-        Ok(self
-            .streams_map
-            .write()
-            .map_err(|_| eyre::eyre!("RwLock poisoned"))?
-            .remove_stream(peer_id))
     }
 
     // ===== Store Access API =====
@@ -872,10 +973,152 @@ pub enum Role {
 
 // Role conversion implementation removed as Role type is not exported from malachitebft_app_channel
 
+/// Tracks the state of proposal streaming
+#[derive(Debug, Clone)]
+pub struct StreamState {
+    pub height: Height,
+    pub round: Round,
+    pub proposer: Option<BasePeerAddress>,
+    pub parts: Vec<Option<ProposalPart>>,
+    pub total_parts: Option<usize>,
+    pub seen_sequences: std::collections::HashSet<Sequence>,
+}
+
+impl Default for StreamState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StreamState {
+    pub fn new() -> Self {
+        Self {
+            height: Height(0),
+            round: Round::new(0),
+            proposer: None,
+            parts: Vec::new(),
+            total_parts: None,
+            seen_sequences: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Insert a proposal part and return complete ProposalParts if done
+    pub fn insert(&mut self, msg: StreamMessage<ProposalPart>) -> Option<ProposalParts> {
+        // Check for duplicate
+        if !self.seen_sequences.insert(msg.sequence) {
+            debug!("Duplicate sequence {} ignored", msg.sequence);
+            return None;
+        }
+
+        match &msg.content {
+            StreamContent::Data(part) => {
+                match part {
+                    ProposalPart::Init(init) => {
+                        self.height = init.height;
+                        self.round = init.round;
+                        self.proposer = Some(BasePeerAddress::from(init.proposer));
+                        debug!(
+                            "Received Init: height={}, round={}, proposer set",
+                            init.height, init.round
+                        );
+                    }
+                    ProposalPart::Data(data) => {
+                        debug!("Received Data part: {} bytes", data.bytes.len());
+                    }
+                    ProposalPart::Fin(_fin) => {
+                        // Final part - we know total count now
+                        self.total_parts = Some(msg.sequence as usize + 1);
+                        debug!(
+                            "Received Fin part, total_parts={}",
+                            msg.sequence as usize + 1
+                        );
+                    }
+                }
+
+                // Ensure we have space for this part
+                if self.parts.len() <= msg.sequence as usize {
+                    self.parts.resize(msg.sequence as usize + 1, None);
+                }
+                self.parts[msg.sequence as usize] = Some(part.clone());
+            }
+            StreamContent::Fin => {
+                self.total_parts = Some(msg.sequence as usize);
+                debug!(
+                    "Received StreamContent::Fin, total_parts={}",
+                    msg.sequence as usize
+                );
+            }
+        }
+
+        // Check if we're done
+        if let Some(total) = self.total_parts {
+            debug!(
+                "Checking completion: total_parts={}, current_parts={}, has_proposer={}",
+                total,
+                self.parts.len(),
+                self.proposer.is_some()
+            );
+
+            if self.parts.len() >= total && self.parts.iter().take(total).all(|p| p.is_some()) {
+                let parts: Vec<ProposalPart> = self
+                    .parts
+                    .iter()
+                    .take(total)
+                    .filter_map(|p| p.clone())
+                    .collect();
+
+                if let Some(proposer) = &self.proposer {
+                    debug!(
+                        "Proposal complete! Returning ProposalParts with {} parts",
+                        parts.len()
+                    );
+                    return Some(ProposalParts {
+                        height: self.height,
+                        round: self.round,
+                        proposer: proposer.clone(),
+                        parts,
+                    });
+                } else {
+                    debug!("All parts received but no proposer set - cannot complete");
+                }
+            } else {
+                debug!("Not all parts received yet");
+            }
+        } else {
+            debug!("total_parts not set yet");
+        }
+
+        None
+    }
+
+    pub fn is_done(&self) -> bool {
+        if let Some(total) = self.total_parts {
+            self.parts.len() >= total
+                && self.parts.iter().take(total).all(|p| p.is_some())
+                && self.proposer.is_some()
+        } else {
+            false
+        }
+    }
+}
+
+/// Complete proposal parts ready for reassembly
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposalParts {
+    pub height: Height,
+    pub round: Round,
+    pub proposer: BasePeerAddress,
+    pub parts: Vec<ProposalPart>,
+}
+
+/// Serialized stream ID representation for use as HashMap key
+/// Since StreamId doesn't implement Hash, we use its byte representation
+type StreamIdBytes = Vec<u8>;
+
 #[derive(Debug, Clone)]
 pub struct PartStreamsMap {
-    // Maps from peer ID to their partial stream state
-    streams: HashMap<MalachitePeerId, PartialStreamState>,
+    // Maps from peer ID to their stream states (stream ID bytes -> stream state)
+    streams: HashMap<MalachitePeerId, HashMap<StreamIdBytes, StreamState>>,
 }
 
 impl PartStreamsMap {
@@ -885,20 +1128,28 @@ impl PartStreamsMap {
         }
     }
 
-    pub fn get_stream(&self, peer_id: &MalachitePeerId) -> Option<&PartialStreamState> {
-        self.streams.get(peer_id)
-    }
+    /// Insert a stream message and return ProposalParts if complete
+    pub fn insert(
+        &mut self,
+        peer_id: MalachitePeerId,
+        msg: StreamMessage<ProposalPart>,
+    ) -> Option<ProposalParts> {
+        let stream_id_bytes = msg.stream_id.to_bytes().to_vec();
 
-    pub fn get_stream_mut(&mut self, peer_id: &MalachitePeerId) -> Option<&mut PartialStreamState> {
-        self.streams.get_mut(peer_id)
-    }
+        let peer_streams = self.streams.entry(peer_id).or_default();
+        let state = peer_streams.entry(stream_id_bytes.clone()).or_default();
 
-    pub fn insert_stream(&mut self, peer_id: MalachitePeerId, stream: PartialStreamState) {
-        self.streams.insert(peer_id, stream);
-    }
+        let result = state.insert(msg);
 
-    pub fn remove_stream(&mut self, peer_id: &MalachitePeerId) -> Option<PartialStreamState> {
-        self.streams.remove(peer_id)
+        if state.is_done() {
+            peer_streams.remove(&stream_id_bytes);
+            // Clean up empty peer entries
+            if peer_streams.is_empty() {
+                self.streams.remove(&peer_id);
+            }
+        }
+
+        result
     }
 }
 
@@ -967,6 +1218,45 @@ pub fn encode_value(value: &Value) -> Bytes {
     }
 }
 
+/// Re-assemble a [`ProposedValue`] from its [`ProposalParts`].
+fn assemble_value_from_parts(parts: ProposalParts) -> (ProposedValue<MalachiteContext>, Bytes) {
+    // Calculate total size and allocate buffer
+    let total_size: usize = parts
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            ProposalPart::Data(data) => Some(data.bytes.len()),
+            _ => None,
+        })
+        .sum();
+
+    let mut data = Vec::with_capacity(total_size);
+
+    // Concatenate all data chunks
+    for part in &parts.parts {
+        if let ProposalPart::Data(data_part) = part {
+            data.extend_from_slice(&data_part.bytes);
+        }
+    }
+
+    // Convert the concatenated data vector into Bytes
+    let data = Bytes::from(data);
+
+    // Decode the value from bytes
+    let value = decode_value(data.clone()).expect("Failed to decode reassembled proposal data");
+
+    let proposed_value = ProposedValue {
+        height: parts.height,
+        round: parts.round,
+        valid_round: Round::Nil,
+        proposer: parts.proposer,
+        value,
+        validity: Validity::Valid,
+    };
+
+    (proposed_value, data)
+}
+
 /// Decode a value from its byte representation
 pub fn decode_value(bytes: Bytes) -> Option<Value> {
     use reth_primitives_traits::serde_bincode_compat::{Block as BlockRepr, SerdeBincodeCompat};
@@ -986,3 +1276,243 @@ pub fn decode_value(bytes: Bytes) -> Option<Value> {
 }
 
 // Type alias for compatibility
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ProposalData, ProposalFin, ProposalInit};
+    use malachitebft_app_channel::app::streaming::{StreamContent, StreamId, StreamMessage};
+
+    fn create_test_address() -> Address {
+        Address::new([1u8; 20])
+    }
+
+    fn create_test_proposal_init() -> ProposalPart {
+        ProposalPart::Init(ProposalInit::new(
+            Height(1),
+            Round::new(0),
+            create_test_address(),
+        ))
+    }
+
+    fn create_test_proposal_data(content: &[u8]) -> ProposalPart {
+        ProposalPart::Data(ProposalData::new(Bytes::from(content.to_vec())))
+    }
+
+    fn create_test_proposal_fin() -> ProposalPart {
+        // Create a dummy signature
+        let signature_bytes = [0u8; 64];
+        let signature = malachitebft_signing_ed25519::Signature::from_bytes(signature_bytes);
+        ProposalPart::Fin(ProposalFin::new(signature))
+    }
+
+    fn create_test_stream_id() -> StreamId {
+        StreamId::new(Bytes::from(vec![1, 2, 3, 4]))
+    }
+
+    #[test]
+    fn test_stream_state_new() {
+        let state = StreamState::new();
+        assert_eq!(state.height, Height(0));
+        assert_eq!(state.round, Round::new(0));
+        assert!(state.proposer.is_none());
+        assert!(state.parts.is_empty());
+        assert!(state.total_parts.is_none());
+        assert!(state.seen_sequences.is_empty());
+        assert!(!state.is_done());
+    }
+
+    #[test]
+    fn test_stream_state_insert_init() {
+        let mut state = StreamState::new();
+        let init_part = create_test_proposal_init();
+
+        let msg = StreamMessage::new(
+            create_test_stream_id(),
+            0,
+            StreamContent::Data(init_part.clone()),
+        );
+
+        let result = state.insert(msg);
+        assert!(result.is_none()); // Not complete yet
+
+        assert_eq!(state.height, Height(1));
+        assert_eq!(state.round, Round::new(0));
+        assert!(state.proposer.is_some());
+        assert_eq!(state.parts.len(), 1);
+        assert!(state.parts[0].is_some());
+    }
+
+    #[test]
+    fn test_stream_state_duplicate_sequence() {
+        let mut state = StreamState::new();
+        let init_part = create_test_proposal_init();
+
+        let msg = StreamMessage::new(
+            create_test_stream_id(),
+            0,
+            StreamContent::Data(init_part.clone()),
+        );
+
+        // First insert should work
+        let result1 = state.insert(msg.clone());
+        assert!(result1.is_none());
+
+        // Duplicate sequence should be rejected
+        let result2 = state.insert(msg);
+        assert!(result2.is_none());
+        assert_eq!(state.seen_sequences.len(), 1);
+    }
+
+    #[test]
+    fn test_stream_state_complete_proposal() {
+        let mut state = StreamState::new();
+
+        // Insert init part
+        let init_msg = StreamMessage::new(
+            create_test_stream_id(),
+            0,
+            StreamContent::Data(create_test_proposal_init()),
+        );
+        assert!(state.insert(init_msg).is_none());
+
+        // Insert data part
+        let data_msg = StreamMessage::new(
+            create_test_stream_id(),
+            1,
+            StreamContent::Data(create_test_proposal_data(b"test data")),
+        );
+        assert!(state.insert(data_msg).is_none());
+
+        // Insert fin part - should complete the proposal
+        let fin_msg = StreamMessage::new(
+            create_test_stream_id(),
+            2,
+            StreamContent::Data(create_test_proposal_fin()),
+        );
+
+        let result = state.insert(fin_msg);
+        assert!(result.is_some());
+
+        let parts = result.unwrap();
+        assert_eq!(parts.height, Height(1));
+        assert_eq!(parts.round, Round::new(0));
+        assert_eq!(parts.parts.len(), 3);
+        assert!(state.is_done());
+    }
+
+    #[test]
+    fn test_stream_state_fin_content() {
+        let mut state = StreamState::new();
+
+        // Insert init part
+        let init_msg = StreamMessage::new(
+            create_test_stream_id(),
+            0,
+            StreamContent::Data(create_test_proposal_init()),
+        );
+        state.insert(init_msg);
+
+        // StreamContent::Fin should set total_parts and complete the proposal
+        let fin_msg = StreamMessage::new(create_test_stream_id(), 1, StreamContent::Fin);
+
+        let result = state.insert(fin_msg);
+        assert!(result.is_some()); // Should complete - we have init (with proposer) and fin says total=1
+        assert_eq!(state.total_parts, Some(1));
+
+        let parts = result.unwrap();
+        assert_eq!(parts.parts.len(), 1); // Only init part
+        assert_eq!(parts.height, Height(1));
+        assert_eq!(parts.round, Round::new(0));
+    }
+
+    #[test]
+    fn test_proposal_parts_fields() {
+        let address = create_test_address();
+        let parts = ProposalParts {
+            height: Height(10),
+            round: Round::new(5),
+            proposer: BasePeerAddress::from(address),
+            parts: vec![
+                create_test_proposal_init(),
+                create_test_proposal_data(b"data"),
+                create_test_proposal_fin(),
+            ],
+        };
+
+        assert_eq!(parts.height, Height(10));
+        assert_eq!(parts.round, Round::new(5));
+        assert_eq!(parts.proposer, BasePeerAddress::from(address));
+        assert_eq!(parts.parts.len(), 3);
+    }
+
+    #[test]
+    fn test_stream_state_out_of_order_parts() {
+        let mut state = StreamState::new();
+
+        // Insert fin part first (out of order)
+        let fin_msg = StreamMessage::new(
+            create_test_stream_id(),
+            2,
+            StreamContent::Data(create_test_proposal_fin()),
+        );
+        assert!(state.insert(fin_msg).is_none());
+        assert_eq!(state.parts.len(), 3); // Should resize to accommodate sequence 2
+        assert_eq!(state.total_parts, Some(3)); // Fin part sets total
+
+        // Insert data part
+        let data_msg = StreamMessage::new(
+            create_test_stream_id(),
+            1,
+            StreamContent::Data(create_test_proposal_data(b"test")),
+        );
+        assert!(state.insert(data_msg).is_none());
+
+        // Insert init part - should complete
+        let init_msg = StreamMessage::new(
+            create_test_stream_id(),
+            0,
+            StreamContent::Data(create_test_proposal_init()),
+        );
+
+        let result = state.insert(init_msg);
+        assert!(result.is_some());
+        assert!(state.is_done());
+    }
+
+    #[test]
+    fn test_stream_state_fin_without_init() {
+        let mut state = StreamState::new();
+
+        // Receive StreamContent::Fin without any init part
+        let fin_msg = StreamMessage::new(create_test_stream_id(), 0, StreamContent::Fin);
+
+        let result = state.insert(fin_msg);
+        assert!(result.is_none()); // Should not complete without proposer
+        assert_eq!(state.total_parts, Some(0)); // Fin at sequence 0 means 0 total parts
+        assert!(state.proposer.is_none()); // No proposer set
+        assert!(!state.is_done()); // Not done because no proposer
+    }
+
+    #[test]
+    fn test_stream_state_fin_without_init_but_with_data() {
+        let mut state = StreamState::new();
+
+        // Insert data part first
+        let data_msg = StreamMessage::new(
+            create_test_stream_id(),
+            0,
+            StreamContent::Data(create_test_proposal_data(b"test")),
+        );
+        assert!(state.insert(data_msg).is_none());
+
+        // Receive StreamContent::Fin
+        let fin_msg = StreamMessage::new(create_test_stream_id(), 1, StreamContent::Fin);
+
+        let result = state.insert(fin_msg);
+        assert!(result.is_none()); // Should not complete without proposer from init
+        assert_eq!(state.total_parts, Some(1)); // Fin at sequence 1 means 1 total part
+        assert!(state.proposer.is_none()); // No proposer set
+        assert!(!state.is_done()); // Not done because no proposer
+    }
+}
