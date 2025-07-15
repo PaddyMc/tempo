@@ -56,8 +56,8 @@ graph TB
     EVM <--> DB
 
     %% Highlight Reth interactions
-    style EA fill:#f9f,stroke:#333,stroke-width:4px
-    style PB fill:#f9f,stroke:#333,stroke-width:4px
+    style EA fill:#e6f3ff,stroke:#0066cc,stroke-width:3px,color:#000
+    style PB fill:#e6f3ff,stroke:#0066cc,stroke-width:3px,color:#000
     
     %% Labels
     S -.- |"GetValue<br/>Decided<br/>ProcessSyncedValue"| EA
