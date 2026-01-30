@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: MIT OR Apache-2.0
+pragma solidity >=0.8.13 <0.9.0;
 
 /// @title GhostState - Ghost Variable Tracking for Invariant Tests
 /// @dev Ghost variables mirror what we expect on-chain state to be
@@ -25,10 +25,6 @@ abstract contract GhostState {
 
     mapping(bytes32 => address) public ghost_createAddresses;
     mapping(address => uint256) public ghost_createCount;
-
-    // ============ Fee Tracking ============
-
-    mapping(address => uint256) public ghost_feeTokenBalance;
 
     // ============ CREATE Rejection Tracking ============
 
@@ -285,6 +281,18 @@ abstract contract GhostState {
     function _recordGasTrackingKeyAuth() internal {
         ghost_gasTrackingKeyAuth++;
         ghost_totalGasTracked++;
+    }
+
+    // ============ Expected Rejection Recording Functions ============
+
+    /// @notice Record key wrong signer rejection (K1, K7, K8)
+    function _recordKeyWrongSigner() internal {
+        ghost_keyAuthRejectedWrongSigner++;
+    }
+
+    /// @notice Record key zero limit rejection (K12)
+    function _recordKeyZeroLimit() internal {
+        ghost_keyZeroLimitRejected++;
     }
 
 }

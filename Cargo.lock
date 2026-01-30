@@ -11710,6 +11710,7 @@ dependencies = [
  "tempo-revm",
  "test-case",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -11829,12 +11830,14 @@ version = "1.0.2"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
+ "alloy-genesis",
  "alloy-primitives",
  "reth-chainspec",
  "reth-consensus",
  "reth-consensus-common",
  "reth-ethereum-consensus",
  "reth-primitives-traits",
+ "serde_json",
  "tempo-chainspec",
  "tempo-primitives",
 ]
